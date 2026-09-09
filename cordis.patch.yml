@@ -1,0 +1,3 @@
+- insert:
+    - id: dsh-drawio
+      name: "@civilization/dsh-drawio"
