@@ -8,10 +8,16 @@ window.DRAW_MATH_URL = null;
 window.DRAWIO_CONFIG = {
   compressXml: false,
   enableCssDarkMode: true,
-  defaultLibraries: 'general;flowchart;basic;arrows2',
-  enabledLibraries: ['general', 'flowchart', 'basic', 'arrows2']
+  defaultLibraries: 'general;uml;er;bpmn;flowchart;basic;arrows2',
+  enabledLibraries: null
 };
 urlParams['sync'] = 'manual';
 urlParams['offline'] = '1';
 urlParams['local'] = '1';
 urlParams['plugins'] = '0';
+
+if (typeof navigator !== 'undefined' && 'serviceWorker' in navigator) {
+  navigator.serviceWorker.getRegistrations().then(function(regs) {
+    for (var i = 0; i < regs.length; i++) regs[i].unregister();
+  }).catch(function() {});
+}

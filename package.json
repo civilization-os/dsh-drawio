@@ -1,6 +1,6 @@
 {
   "name": "@civilization/dsh-drawio",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Local draw.io canvas and model tools for DeepSeek Harness",
   "license": "Apache-2.0",
   "type": "module",
@@ -59,8 +59,7 @@
     "@deepseek-ai/dsh-fs": "^0.1.2-rc.1",
     "@deepseek-ai/dsh-host-webserver": "^0.1.2-rc.1",
     "@deepseek-ai/dsh-sandbox": "^0.1.2-rc.1",
-    "@deepseek-ai/dsh-tools": "^0.1.2-rc.1",
-    "dsh-better-sidebar": ">=0.18.0"
+    "@deepseek-ai/dsh-tools": "^0.1.2-rc.1"
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "4.0.2",
@@ -69,7 +68,6 @@
     "@deepseek-ai/dsh-sandbox": "0.1.2-rc.1",
     "@deepseek-ai/dsh-tools": "0.1.2-rc.1",
     "@types/react": "18.3.31",
-    "dsh-better-sidebar": "0.18.0",
     "esbuild": "0.28.2",
     "react": "18.3.1",
     "typescript": "5.9.3"

@@ -5,7 +5,7 @@
 
 ## 边界
 
-- 不引入项目、目录或文件管理；继续使用 DSH 与 `dsh-better-sidebar`。
+- 不引入项目、目录或文件管理；直接使用 DSH 官方右侧栏与文件工作台。
 - 任意 `.drawio` 文件都由画板打开，可停靠、拆分或浮动。
 - 编辑器资源由 DSH Host 从本机提供，不连接 diagrams.net。
 - 用户保存和 Agent 工具修改的是同一份 XML 文件。
@@ -31,8 +31,11 @@ dsh plugin --profile web add D:\project\dsh-drawio --registry=https://registry.n
 dsh web --port 3082 --no-open
 ```
 
-已在 DSH 0.1.2-rc.1 与 dsh-better-sidebar 0.18.0 上验证构建、XML 操作、
-本地静态资源加载和 `.drawio` 画板打开；浏览器控制台无错误或警告。
+客户端只注入 DSH 官方的 `slots` 与 `sidebarRightTabs` 服务。文件工作台打开
+`.drawio` 文件时，由官方资源路由选择本插件的画板；读取和自动保存通过插件自有的
+`/dsh-drawio/api` 接口完成，并限制在当前会话工作区内。
 
-当前内置的精简 Draw.io runtime 固定为 31.4.5。基础图形、常用图形库和中文资源可用；
+已在 DSH 0.1.5-rc.2 上验证构建、XML 操作、本地静态资源加载和官方右侧栏注册。
+
+当前内置的精简 Draw.io runtime 固定为 31.4.5。包含完整满血版内置图库（通用、流程图、UML、ER、BPMN、网络、Kubernetes、AWS、GCP、Cisco、电子、平面图等全部分类均可自由开启）以及 PlantUML 离线渲染模块；
 云盘、在线图库、模板库、VSDX/Gliffy 导入和服务端导出未包含。

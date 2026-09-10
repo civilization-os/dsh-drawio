@@ -9,6 +9,8 @@ export const name = 'dsh-drawio'
 export const inject = ['tools', 'fs', 'sandbox', 'webServer']
 
 const runtimeRoot = fileURLToPath(new URL('../vendor/drawio/', import.meta.url))
+const MAX_DIAGRAM_BYTES = 10 * 1024 * 1024
+const MAX_REQUEST_BYTES = MAX_DIAGRAM_BYTES + 64 * 1024
 const output = {
   schema: { type: 'object', additionalProperties: true, properties: {} },
   render: (_args, value) => [{ type: 'text', text: JSON.stringify(value, null, 2) }],
@@ -17,6 +19,7 @@ const pathParameter = { type: 'string', required: true, description: 'Path to a 
 
 export function apply(ctx) {
   ctx.effect(() => ctx.webServer.register({ kind: 'prefix', path: '/dsh-drawio/runtime', handler: serveRuntime }))
+  ctx.effect(() => ctx.webServer.register({ kind: 'prefix', path: '/dsh-drawio/api', handler: (req, res) => serveCanvasApi(ctx, req, res) }))
   register(ctx, defineTool({
     name: 'drawio_inspect',
     description: 'Read a Draw.io file as structured pages, nodes, edges and geometry. Use this before editing an existing diagram. Set include_xml only when raw XML details are required.',
@@ -69,6 +72,67 @@ export function apply(ctx) {
       return { path: target.displayPath, operation: outcome.operation, ...inspectDrawio(xml, false) }
     },
   }))
+}
+
+async function serveCanvasApi(ctx, req, res) {
+  if (req.method === 'OPTIONS') {
+    res.statusCode = 204
+    res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS')
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type')
+    res.end()
+    return
+  }
+  if (req.method !== 'POST') return respondJson(res, 405, { ok: false, error: { message: 'Method Not Allowed' } })
+  try {
+    const pathname = new URL(req.url || '/', 'http://dsh.internal').pathname
+    const method = pathname.slice('/dsh-drawio/api/'.length)
+    if (!['read', 'write'].includes(method)) return respondJson(res, 404, { ok: false, error: { message: 'Unknown Draw.io operation.' } })
+    const payload = await readJsonBody(req)
+    const target = await resolveCanvasTarget(ctx, payload.cwd, payload.path)
+    const info = await ctx.fs.stat(target)
+    if (!info || info.type !== 'file') throw new Error('Draw.io file was not found.')
+    if (Number(info.size) > MAX_DIAGRAM_BYTES) throw new Error('Draw.io file is too large to open safely.')
+    if (method === 'read') return respondJson(res, 200, { ok: true, value: { content: await ctx.fs.readText(target) } })
+    if (typeof payload.content !== 'string' || Buffer.byteLength(payload.content) > MAX_DIAGRAM_BYTES) throw new Error('Draw.io content is too large to save safely.')
+    const xml = normalizeDrawio(payload.content)
+    const sandboxPolicy = { mode: 'workspace-write', workspaceRoot: payload.cwd }
+    await ctx.fs.writeText(target, xml, { kind: 'replaceIfVersion', version: info.version }, undefined, sandboxPolicy)
+    return respondJson(res, 200, { ok: true, value: { ok: true } })
+  } catch (error) {
+    return respondJson(res, 400, { ok: false, error: { message: String(error?.message || error).slice(0, 500) } })
+  }
+}
+
+async function resolveCanvasTarget(ctx, cwd, path) {
+  if (typeof cwd !== 'string' || !cwd.trim()) throw new Error('A workspace is required.')
+  assertDrawioPath(path)
+  const [root, target] = await Promise.all([ctx.fs.resolve(cwd), ctx.fs.resolve(path, { cwd })])
+  if (!ctx.fs.contains(root, target)) throw new Error('Draw.io file must stay inside the current workspace.')
+  return target
+}
+
+async function readJsonBody(req) {
+  const declared = Number(req.headers?.['content-length'])
+  if (Number.isFinite(declared) && declared > MAX_REQUEST_BYTES) throw new Error('Request body is too large.')
+  const chunks = []; let size = 0
+  for await (const chunk of req) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
+    size += buffer.length
+    if (size > MAX_REQUEST_BYTES) throw new Error('Request body is too large.')
+    chunks.push(buffer)
+  }
+  const text = Buffer.concat(chunks).toString('utf8')
+  const value = text ? JSON.parse(text) : {}
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Request body must be a JSON object.')
+  return value
+}
+
+function respondJson(res, status, value) {
+  const body = JSON.stringify(value)
+  res.statusCode = status
+  res.setHeader('Content-Type', 'application/json; charset=utf-8')
+  res.setHeader('Content-Length', Buffer.byteLength(body))
+  res.end(body)
 }
 
 function register(ctx, tool) {
