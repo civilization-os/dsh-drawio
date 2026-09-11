@@ -6,7 +6,7 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 import { editDrawio, inspectDrawio, normalizeDrawio } from './xml.js'
 
 export const name = 'dsh-drawio'
-export const inject = ['tools', 'fs', 'sandbox', 'webServer']
+export const inject = ['tools', 'fs', 'webServer']
 
 const runtimeRoot = fileURLToPath(new URL('../vendor/drawio/', import.meta.url))
 const MAX_DIAGRAM_BYTES = 10 * 1024 * 1024
@@ -54,7 +54,8 @@ export function apply(ctx) {
     async execute(args, exec) {
       const { text, target } = await readDiagram(ctx, args.path, exec)
       const xml = editDrawio(text, args.operations, args.page)
-      const outcome = await writeDiagram(ctx, target, xml, args, exec)
+      const policy = await resolvePolicy(ctx, 'drawio_edit', args, exec)
+      const outcome = await writeDiagram(ctx, target, xml, args, exec, policy)
       return { path: target.displayPath, operation: outcome.operation, operationsApplied: args.operations.length, ...inspectDrawio(xml, false) }
     },
   }))
@@ -65,7 +66,7 @@ export function apply(ctx) {
     output,
     async execute(args, exec) {
       assertDrawioPath(args.path)
-      const policy = await ctx.sandbox.resolvePolicy('write', args, exec)
+      const policy = await resolvePolicy(ctx, 'drawio_write', args, exec)
       const target = await ctx.fs.resolve(args.path, resolveOptions(exec, args.path, policy?.workspaceRoot))
       const xml = normalizeDrawio(args.xml)
       const outcome = await writeDiagram(ctx, target, xml, args, exec, policy)
@@ -150,8 +151,24 @@ async function readDiagram(ctx, requestedPath, exec) {
   return { target, text }
 }
 
+async function resolvePolicy(ctx, toolName, args, exec) {
+  const sandbox = ctx.get?.('sandbox')
+  if (sandbox?.resolvePolicy) {
+    try {
+      return await sandbox.resolvePolicy(toolName, args, exec)
+    } catch {}
+  }
+  const policyService = ctx.get?.('sandboxPolicy')
+  if (policyService?.resolve) {
+    try {
+      return policyService.resolve({ ...(exec?.agent ? { session: exec.agent.session } : {}) })
+    } catch {}
+  }
+  return undefined
+}
+
 async function writeDiagram(ctx, target, xml, args, exec, resolvedPolicy) {
-  const policy = resolvedPolicy ?? await ctx.sandbox.resolvePolicy('write', args, exec)
+  const policy = resolvedPolicy ?? await resolvePolicy(ctx, 'write', args, exec)
   const intent = await ctx.waterfall('fs/write-intent', target, exec, () => undefined)
   const outcome = await ctx.fs.writeText(target, xml, intent, exec.signal, policy)
   ctx.emit('fs/observed', target, { kind: 'present', version: outcome.version }, exec)
