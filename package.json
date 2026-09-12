@@ -1,6 +1,6 @@
 {
   "name": "@civilization/dsh-drawio",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "description": "Local draw.io canvas and model tools for DeepSeek Harness",
   "license": "Apache-2.0",
   "type": "module",

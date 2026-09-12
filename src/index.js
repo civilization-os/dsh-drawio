@@ -87,8 +87,33 @@ async function serveCanvasApi(ctx, req, res) {
   try {
     const pathname = new URL(req.url || '/', 'http://dsh.internal').pathname
     const method = pathname.slice('/dsh-drawio/api/'.length)
-    if (!['read', 'write'].includes(method)) return respondJson(res, 404, { ok: false, error: { message: 'Unknown Draw.io operation.' } })
+    if (!['read', 'write', 'save-image'].includes(method)) return respondJson(res, 404, { ok: false, error: { message: 'Unknown Draw.io operation.' } })
     const payload = await readJsonBody(req)
+
+    if (method === 'save-image') {
+      if (typeof payload.data !== 'string' || !payload.data.trim()) throw new Error('Image data is required.')
+      const target = await resolveCanvasTarget(ctx, payload.cwd, payload.path, true)
+      let buffer
+      if (payload.data.startsWith('data:')) {
+        const comma = payload.data.indexOf(',')
+        const base64 = comma >= 0 ? payload.data.slice(comma + 1) : payload.data
+        buffer = Buffer.from(base64, 'base64')
+      } else if (payload.data.startsWith('<svg') || payload.data.startsWith('<?xml')) {
+        buffer = Buffer.from(payload.data, 'utf8')
+      } else {
+        buffer = Buffer.from(payload.data, 'base64')
+      }
+      if (buffer.length > MAX_REQUEST_BYTES) throw new Error('Image data is too large to save safely.')
+      const sandboxPolicy = { mode: 'workspace-write', workspaceRoot: payload.cwd }
+      const outcome = typeof ctx.fs.writeFile === 'function'
+        ? await ctx.fs.writeFile(target, buffer, { kind: 'replace' }, undefined, sandboxPolicy)
+        : typeof ctx.fs.writeBinary === 'function'
+          ? await ctx.fs.writeBinary(target, buffer, { kind: 'replace' }, undefined, sandboxPolicy)
+          : await ctx.fs.writeText(target, payload.path.endsWith('.svg') ? buffer.toString('utf8') : buffer.toString('base64'), { kind: 'replace' }, undefined, sandboxPolicy)
+      ctx.emit?.('fs/observed', target, { kind: 'present', version: outcome?.version }, undefined)
+      return respondJson(res, 200, { ok: true, value: { path: target.displayPath ?? payload.path, bytes: buffer.length } })
+    }
+
     const target = await resolveCanvasTarget(ctx, payload.cwd, payload.path)
     const info = await ctx.fs.stat(target)
     if (!info || info.type !== 'file') throw new Error('Draw.io file was not found.')
@@ -104,12 +129,20 @@ async function serveCanvasApi(ctx, req, res) {
   }
 }
 
-async function resolveCanvasTarget(ctx, cwd, path) {
+async function resolveCanvasTarget(ctx, cwd, path, allowImage = false) {
   if (typeof cwd !== 'string' || !cwd.trim()) throw new Error('A workspace is required.')
-  assertDrawioPath(path)
+  if (allowImage) {
+    assertExportImagePath(path)
+  } else {
+    assertDrawioPath(path)
+  }
   const [root, target] = await Promise.all([ctx.fs.resolve(cwd), ctx.fs.resolve(path, { cwd })])
-  if (!ctx.fs.contains(root, target)) throw new Error('Draw.io file must stay inside the current workspace.')
+  if (!ctx.fs.contains(root, target)) throw new Error('File must stay inside the current workspace.')
   return target
+}
+
+function assertExportImagePath(value) {
+  if (typeof value !== 'string' || !/\.(png|svg|xml\.png)$/i.test(value)) throw new Error('path must end with .png or .svg')
 }
 
 async function readJsonBody(req) {
