@@ -30,32 +30,53 @@ export function apply(ctx: Context): void {
 
 function OfficialDrawioTabTitle({ useTabInfo }: any): JSX.Element {
   const { tab } = useTabInfo()
-  return <><CanvasIcon size={15} /><span>{tab.title}</span></>
+  const title = tab?.title || (tab?.navigation?.address ? fileName(parseDrawioAddress(tab.navigation.address)?.path ?? 'Draw.io') : 'Draw.io')
+  return <><CanvasIcon size={15} /><span>{title}</span></>
 }
 
 function OfficialDrawioTabBody({ sessionId, useSessions, useTabInfo }: any): JSX.Element {
   const { tab } = useTabInfo()
-  const cwd = useSessions((sessions: any) => sessions?.byId?.[sessionId]?.cwd) as string | undefined
-  const resource = useMemo(() => parseDrawioAddress(tab.navigation.address), [tab.navigation.address])
+  const rawAddress = tab?.navigation?.address
+  const resource = useMemo(() => parseDrawioAddress(rawAddress, sessionId), [rawAddress, sessionId])
+
+  const activeCwd = useSessions((sessions: any) => sessions?.byId?.[sessionId]?.cwd) as string | undefined
+  const resourceCwd = useSessions((sessions: any) => resource?.sessionId ? sessions?.byId?.[resource.sessionId]?.cwd : undefined) as string | undefined
+  const cwd = activeCwd || resourceCwd
+  const effectiveSessionId = sessionId || resource?.sessionId || ''
+
   const [file, setFile] = useState<{ key: string; content: string } | null>(null)
   const [error, setError] = useState<string | null>(null)
-  const key = `${sessionId}\0${cwd ?? ''}\0${resource?.path ?? ''}`
+  const key = `${effectiveSessionId}\0${cwd ?? ''}\0${resource?.path ?? ''}`
 
   useEffect(() => {
-    if (!resource || resource.sessionId !== sessionId || !cwd) return
+    if (!resource?.path || !effectiveSessionId || !cwd) return
     const controller = new AbortController()
     setError(null)
-    void fsRead({ sessionId, cwd }, resource.path, controller.signal)
+    void fsRead({ sessionId: effectiveSessionId, cwd }, resource.path, controller.signal)
       .then(content => { if (!controller.signal.aborted) setFile({ key, content }) })
       .catch(reason => { if (!controller.signal.aborted) setError(messageOf(reason)) })
     return () => controller.abort()
-  }, [key, resource?.sessionId, resource?.path, sessionId, cwd])
+  }, [key, resource?.path, effectiveSessionId, cwd])
 
-  if (!resource || resource.sessionId !== sessionId) return <CenteredMessage title="无法打开画板" detail="文件地址不是当前会话中的 Draw.io 文件。" />
-  if (!cwd) return <CenteredMessage title="无法打开画板" detail="当前会话没有可用的工作区。" />
+  if (!resource || !resource.path) {
+    return (
+      <CenteredMessage
+        title="无法打开画板"
+        detail={rawAddress ? `无法解析 Draw.io 文件地址：${rawAddress}` : '无法获取文件导航地址。'}
+      />
+    )
+  }
+  if (!cwd) {
+    return (
+      <CenteredMessage
+        title="无法打开画板"
+        detail="当前会话没有关联可用的工作区，请先在 DSH 中打开或选择一个工作区文件夹。"
+      />
+    )
+  }
   if (error) return <CenteredMessage title="画板载入失败" detail={error} />
   if (file?.key !== key) return <CenteredMessage title="正在载入画板" detail={fileName(resource.path)} />
-  return <DrawioCanvas content={file.content} path={resource.path} scope={{ sessionId, cwd }} />
+  return <DrawioCanvas content={file.content} path={resource.path} scope={{ sessionId: effectiveSessionId, cwd }} />
 }
 
 function DrawioCanvas({ content, truncated, path, scope }: FileViewerProps): JSX.Element {
@@ -488,16 +509,50 @@ function CenteredMessage({ title, detail }: { title: string; detail: string }): 
 }
 
 const fileName = (path: string): string => path.replace(/\\/g, '/').split('/').pop() || path
-function parseDrawioAddress(address: string): { sessionId: string; path: string } | null {
-  const prefix = 'dsh-resource://file/session/'
-  if (!address.startsWith(prefix)) return null
+
+export function parseDrawioAddress(address?: string, fallbackSessionId?: string): { sessionId: string; path: string } | null {
+  if (!address || typeof address !== 'string') return null
   try {
-    const parts = address.slice(prefix.length).split('/').map(decodeURIComponent)
-    const sessionId = parts.shift() ?? ''
-    const path = parts.join('/')
-    if (!sessionId || !path || !/\.drawio$/i.test(path) || parts.some(part => part.includes('/') || part.includes('\\') || part.includes('\0'))) return null
-    return { sessionId, path }
-  } catch { return null }
+    let clean = address.trim()
+    let parsedSessionId = ''
+
+    if (clean.startsWith('dsh-resource://file/session/')) {
+      const rest = clean.slice('dsh-resource://file/session/'.length)
+      const slashIdx = rest.indexOf('/')
+      if (slashIdx >= 0) {
+        parsedSessionId = decodeURIComponent(rest.slice(0, slashIdx))
+        clean = rest.slice(slashIdx + 1)
+      } else {
+        clean = rest
+      }
+    } else if (clean.startsWith('dsh-resource://file/')) {
+      clean = clean.slice('dsh-resource://file/'.length)
+    } else if (clean.startsWith('file:///')) {
+      clean = clean.slice('file:///'.length)
+    }
+
+    // 处理可能是 URL 编码的 path（支持嵌套目录 %2F）
+    let decodedPath = clean
+    try {
+      decodedPath = decodeURIComponent(clean)
+    } catch {}
+
+    // 规范化斜杠并去除开头的斜杠
+    decodedPath = decodedPath.replace(/\\/g, '/').replace(/^\/+/, '')
+
+    // 必须是 .drawio 文件
+    if (!/\.drawio$/i.test(decodedPath)) return null
+
+    // 防空字符
+    if (decodedPath.includes('\0')) return null
+
+    return {
+      sessionId: parsedSessionId || fallbackSessionId || '',
+      path: decodedPath,
+    }
+  } catch {
+    return null
+  }
 }
 const messageOf = (reason: unknown): string => reason instanceof Error ? reason.message : String(reason)
 const statusText = (state: string): string => state === 'loading' ? '正在载入' : state === 'saving' ? '正在保存' : state === 'external' ? '已同步 AI 修改' : state === 'error' ? '保存失败' : '已保存'
