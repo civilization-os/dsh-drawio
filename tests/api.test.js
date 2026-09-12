@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { Readable } from 'node:stream'
 import { apply } from '../src/index.js'
 
-function createMockContext() {
+async function createMockContext() {
   const handlers = new Map()
   const writtenFiles = []
   const ctx = {
@@ -13,6 +13,9 @@ function createMockContext() {
       },
     },
     tools: {
+      register() {},
+    },
+    skills: {
       register() {},
     },
     fs: {
@@ -45,7 +48,7 @@ function createMockContext() {
     effect(fn) { fn() },
     emit() {},
   }
-  apply(ctx)
+  await apply(ctx)
   return { handlers, writtenFiles }
 }
 
@@ -80,7 +83,7 @@ function mockResponse() {
 }
 
 test('save-image endpoint decodes base64 data and writes image safely to workspace', async () => {
-  const { handlers, writtenFiles } = createMockContext()
+  const { handlers, writtenFiles } = await createMockContext()
   const apiHandler = handlers.get('/dsh-drawio/api')
   assert.ok(apiHandler, 'API handler should be registered')
 
@@ -101,7 +104,7 @@ test('save-image endpoint decodes base64 data and writes image safely to workspa
 })
 
 test('save-image rejects invalid image extensions and path traversal', async () => {
-  const { handlers } = createMockContext()
+  const { handlers } = await createMockContext()
   const apiHandler = handlers.get('/dsh-drawio/api')
 
   // 非图片后缀拒绝

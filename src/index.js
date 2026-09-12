@@ -1,12 +1,12 @@
 import { createReadStream } from 'node:fs'
-import { stat } from 'node:fs/promises'
+import { stat, readFile } from 'node:fs/promises'
 import { extname, join, normalize, relative, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { editDrawio, inspectDrawio, normalizeDrawio } from './xml.js'
 
 export const name = 'dsh-drawio'
-export const inject = ['tools', 'fs', 'webServer']
+export const inject = ['tools', 'fs', 'webServer', 'skills']
 
 const runtimeRoot = fileURLToPath(new URL('../vendor/drawio/', import.meta.url))
 const MAX_DIAGRAM_BYTES = 10 * 1024 * 1024
@@ -17,7 +17,20 @@ const output = {
 }
 const pathParameter = { type: 'string', required: true, description: 'Path to a .drawio file, relative to the current DSH workspace or absolute within the allowed workspace.' }
 
-export function apply(ctx) {
+export async function apply(ctx) {
+  try {
+    const skillPath = new URL('../skills/drawio-operation/SKILL.md', import.meta.url)
+    const skillText = await readFile(skillPath, 'utf8')
+    const content = skillText.replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n/, '').trim()
+    ctx.effect(() => ctx.skills?.register({
+      name: 'drawio-operation',
+      description: 'Inspect, edit, and create Draw.io diagrams with the local canvas and model tools.',
+      whenToUse: 'Use for creating, reading, or modifying architecture diagrams, flowcharts, or Draw.io XML files.',
+      source: 'bundled',
+      content,
+    }))
+  } catch {}
+
   ctx.effect(() => ctx.webServer.register({ kind: 'prefix', path: '/dsh-drawio/runtime', handler: serveRuntime }))
   ctx.effect(() => ctx.webServer.register({ kind: 'prefix', path: '/dsh-drawio/api', handler: (req, res) => serveCanvasApi(ctx, req, res) }))
   register(ctx, defineTool({
