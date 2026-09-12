@@ -10,9 +10,11 @@
 - 编辑器资源由 DSH Host 从本机提供，不连接 diagrams.net。
 - 用户保存和 Agent 工具修改的是同一份 XML 文件。
 - 文件读取、写入、路径限制和审批继续经过 DSH 服务。
+- 提供 `drawio-operation` Skill 和 3 个模型专属工具。
 
-## Agent 工具
+## Agent 工具与 Skill
 
+- `drawio-operation` Skill：向模型注入 Draw.io 画板整体架构、离线导出机制与最佳绘图工作流。
 - `drawio_inspect`：把画板读取为页面、节点、连线和几何信息。
 - `drawio_edit`：批量新增、更新、删除节点和连线。
 - `drawio_write`：校验并写入完整的 Draw.io XML。
