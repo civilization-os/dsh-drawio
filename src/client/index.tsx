@@ -14,7 +14,14 @@ export function apply(ctx: Context): void {
   ctx.effect(() => official.sidebarRightTabs.register({
     id: TAB_ID,
     kind: TAB_KIND,
-    patterns: ['*.drawio'],
+    // The whole-address glob is what actually wins this file: tab types are
+    // ranked by priority band, then by the length of the matched pattern, so a
+    // bare `*.drawio` (8 characters) loses the claim to any type declaring a
+    // broader address glob in the same `extension` band — e.g.
+    // dsh-better-sidebar's file editor (`dsh-resource://file/**`, 22), which
+    // then renders the XML instead of this canvas. Keeping both patterns makes
+    // the specific one win wherever it matches.
+    patterns: ['dsh-resource://file/**/*.drawio', '*.drawio'],
     priority: 'extension',
     title: (address: string) => fileName(parseDrawioAddress(address)?.path ?? 'Draw.io'),
   }), 'dsh-drawio: official tab definition')
