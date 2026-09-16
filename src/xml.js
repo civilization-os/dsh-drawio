@@ -10,18 +10,42 @@ export function inspectDrawio(source, includeXml = false) {
   const pages = pageNodes(document).map((page, index) => {
     const model = modelForPage(page)
     const cells = Array.from(model.getElementsByTagName('mxCell'))
+    const nodeCells = cells.filter(cell => cell.getAttribute('vertex') === '1')
+    const edgeCells = cells.filter(cell => cell.getAttribute('edge') === '1')
+    const childMap = new Map()
+    for (const cell of nodeCells) {
+      childMap.set(cell.getAttribute('id'), [])
+    }
+    for (const cell of nodeCells) {
+      const parentId = cell.getAttribute('parent')
+      if (parentId && childMap.has(parentId)) {
+        childMap.get(parentId).push(cell.getAttribute('id'))
+      }
+    }
     return {
       index,
       id: page.getAttribute('id') || `page-${index + 1}`,
       name: page.getAttribute('name') || `Page-${index + 1}`,
-      nodes: cells.filter(cell => cell.getAttribute('vertex') === '1').map(cell => cellSummary(cell)),
-      edges: cells.filter(cell => cell.getAttribute('edge') === '1').map(cell => ({
-        id: cell.getAttribute('id'),
-        label: cell.getAttribute('value') || '',
-        source: cell.getAttribute('source') || '',
-        target: cell.getAttribute('target') || '',
-        style: cell.getAttribute('style') || '',
-      })),
+      nodes: nodeCells.map(cell => {
+        const id = cell.getAttribute('id')
+        const rawValue = cell.getAttribute('value') || ''
+        return {
+          ...cellSummary(cell),
+          plainText: stripHtml(rawValue),
+          children: childMap.get(id) || [],
+        }
+      }),
+      edges: edgeCells.map(cell => {
+        const rawValue = cell.getAttribute('value') || ''
+        return {
+          id: cell.getAttribute('id'),
+          label: rawValue,
+          plainText: stripHtml(rawValue),
+          source: cell.getAttribute('source') || '',
+          target: cell.getAttribute('target') || '',
+          style: cell.getAttribute('style') || '',
+        }
+      }),
     }
   })
   return { pages, ...(includeXml ? { xml: serializer.serializeToString(document) } : {}) }
@@ -29,14 +53,51 @@ export function inspectDrawio(source, includeXml = false) {
 
 export function editDrawio(source, operations, pageSelector) {
   const document = parseDrawio(source || EMPTY_DRAWIO)
-  const pages = pageNodes(document)
-  const page = selectPage(pages, pageSelector)
-  const model = modelForPage(page)
-  const root = model.getElementsByTagName('root')[0]
+  let pages = pageNodes(document)
+  let currentPage = selectPage(pages, pageSelector)
+  let model = modelForPage(currentPage)
+  let root = model.getElementsByTagName('root')[0]
   if (!root) throw new Error('The selected page has no mxGraphModel/root element.')
 
-  for (const operation of operations) applyOperation(document, root, operation)
-  replacePageModel(document, page, model)
+  for (const operation of operations) {
+    if (!operation || typeof operation !== 'object') throw new Error('Every operation must be an object.')
+    const { type } = operation
+    if (type === 'add_page') {
+      const newPageId = operation.id || `page-${Date.now().toString(36)}`
+      const newPageName = operation.name || `Page-${pages.length + 1}`
+      const newDiagram = document.createElement('diagram')
+      newDiagram.setAttribute('id', newPageId)
+      newDiagram.setAttribute('name', newPageName)
+      const templateDoc = parseDrawio(EMPTY_DRAWIO)
+      const templateModel = modelForPage(pageNodes(templateDoc)[0])
+      newDiagram.appendChild(document.importNode(templateModel, true))
+      document.documentElement.appendChild(newDiagram)
+      pages = pageNodes(document)
+      continue
+    }
+    if (type === 'delete_page') {
+      if (pages.length <= 1) throw new Error('Cannot delete the only remaining diagram page.')
+      const targetPage = selectPage(pages, operation.page)
+      document.documentElement.removeChild(targetPage)
+      pages = pageNodes(document)
+      if (currentPage === targetPage) {
+        currentPage = pages[0]
+        model = modelForPage(currentPage)
+        root = model.getElementsByTagName('root')[0]
+      }
+      continue
+    }
+    if (type === 'rename_page') {
+      const targetPage = operation.page !== undefined ? selectPage(pages, operation.page) : currentPage
+      const newName = required(operation.name, 'rename_page.name')
+      targetPage.setAttribute('name', newName)
+      continue
+    }
+
+    applyOperation(document, root, operation)
+  }
+
+  replacePageModel(document, currentPage, model)
   document.documentElement.setAttribute('compressed', 'false')
   document.documentElement.setAttribute('modified', new Date().toISOString())
   return serializer.serializeToString(document)
@@ -47,6 +108,46 @@ export function normalizeDrawio(source) {
   for (const page of pageNodes(document)) replacePageModel(document, page, modelForPage(page))
   document.documentElement.setAttribute('compressed', 'false')
   return serializer.serializeToString(document)
+}
+
+export function stripHtml(input) {
+  if (!input || typeof input !== 'string') return ''
+  return input
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+export function patchStyle(currentStyle = '', patch = {}) {
+  const parts = currentStyle.split(';').map(s => s.trim()).filter(Boolean)
+  const map = new Map()
+  const bareKeys = []
+  for (const part of parts) {
+    const eqIdx = part.indexOf('=')
+    if (eqIdx >= 0) {
+      map.set(part.slice(0, eqIdx), part.slice(eqIdx + 1))
+    } else {
+      bareKeys.push(part)
+    }
+  }
+  for (const [key, val] of Object.entries(patch)) {
+    if (val === null || val === undefined || val === '') {
+      map.delete(key)
+    } else {
+      map.set(key, String(val))
+    }
+  }
+  const serialized = [
+    ...bareKeys,
+    ...Array.from(map.entries()).map(([k, v]) => `${k}=${v}`),
+  ].join(';')
+  return serialized ? `${serialized};` : ''
 }
 
 function applyOperation(document, root, operation) {
@@ -97,6 +198,10 @@ function applyOperation(document, root, operation) {
     const cell = assertCell(root, required(operation.id, 'update.id'))
     if (operation.label !== undefined) cell.setAttribute('value', stringValue(operation.label))
     if (operation.style !== undefined) cell.setAttribute('style', stringValue(operation.style))
+    if (operation.stylePatch && typeof operation.stylePatch === 'object') {
+      const current = cell.getAttribute('style') || ''
+      cell.setAttribute('style', patchStyle(current, operation.stylePatch))
+    }
     if (operation.parent !== undefined) cell.setAttribute('parent', stringValue(operation.parent))
     const geometryKeys = ['x', 'y', 'width', 'height']
     if (geometryKeys.some(key => operation[key] !== undefined)) {

@@ -129,3 +129,57 @@ test('save-image rejects invalid image extensions and path traversal', async () 
   assert.equal(resEscape.statusCode, 400)
   assert.match(resEscape.body.error.message, /File must stay inside the current workspace/)
 })
+
+test('stat and read endpoints return file version and prevent concurrency conflicts', async () => {
+  const { handlers } = await createMockContext()
+  const apiHandler = handlers.get('/dsh-drawio/api')
+
+  // 1. stat 端点
+  const reqStat = mockRequest('POST', '/dsh-drawio/api/stat', {
+    cwd: 'D:/workspace',
+    path: 'sample.drawio',
+  })
+  const resStat = mockResponse()
+  await apiHandler(reqStat, resStat)
+  assert.equal(resStat.statusCode, 200)
+  assert.equal(resStat.body.value.version, '1')
+  assert.equal(resStat.body.value.size, 100)
+
+  // 2. read 端点
+  const reqRead = mockRequest('POST', '/dsh-drawio/api/read', {
+    cwd: 'D:/workspace',
+    path: 'sample.drawio',
+  })
+  const resRead = mockResponse()
+  await apiHandler(reqRead, resRead)
+  assert.equal(resRead.statusCode, 200)
+  assert.equal(resRead.body.value.version, '1')
+  assert.match(resRead.body.value.content, /<mxfile/)
+
+  // 3. write 端点带有匹配的 version
+  const validXml = '<mxfile host="DSH" compressed="false"><diagram id="page-1" name="Page-1"><mxGraphModel dx="1200" dy="800" grid="1"><root><mxCell id="0"/><mxCell id="1" parent="0"/></root></mxGraphModel></diagram></mxfile>'
+  const reqWriteOk = mockRequest('POST', '/dsh-drawio/api/write', {
+    cwd: 'D:/workspace',
+    path: 'sample.drawio',
+    content: validXml,
+    version: '1',
+  })
+  const resWriteOk = mockResponse()
+  await apiHandler(reqWriteOk, resWriteOk)
+  assert.equal(resWriteOk.statusCode, 200)
+  assert.equal(resWriteOk.body.value.version, '2')
+
+  // 4. write 端点带有过期的 version -> 返回 409
+  const reqWriteConflict = mockRequest('POST', '/dsh-drawio/api/write', {
+    cwd: 'D:/workspace',
+    path: 'sample.drawio',
+    content: validXml,
+    version: 'outdated-v0',
+  })
+  const resWriteConflict = mockResponse()
+  await apiHandler(reqWriteConflict, resWriteConflict)
+  assert.equal(resWriteConflict.statusCode, 409)
+  assert.equal(resWriteConflict.body.conflict, true)
+  assert.match(resWriteConflict.body.error.message, /modified by an external process/)
+})
+

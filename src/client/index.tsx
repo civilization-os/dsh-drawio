@@ -6,7 +6,7 @@ const TAB_ID = '@civilization/dsh-drawio'
 const TAB_KIND = 'drawio'
 
 interface SessionScope { sessionId: string; cwd?: string }
-interface FileViewerProps { content?: string; truncated?: boolean; path: string; scope: SessionScope }
+interface FileViewerProps { content?: string; version?: string; truncated?: boolean; path: string; scope: SessionScope }
 interface OfficialContext extends Context { slots: any; sidebarRightTabs: any }
 
 export function apply(ctx: Context): void {
@@ -44,7 +44,7 @@ function OfficialDrawioTabBody({ sessionId, useSessions, useTabInfo }: any): JSX
   const cwd = activeCwd || resourceCwd
   const effectiveSessionId = sessionId || resource?.sessionId || ''
 
-  const [file, setFile] = useState<{ key: string; content: string } | null>(null)
+  const [file, setFile] = useState<{ key: string; content: string; version?: string } | null>(null)
   const [error, setError] = useState<string | null>(null)
   const key = `${effectiveSessionId}\0${cwd ?? ''}\0${resource?.path ?? ''}`
 
@@ -53,7 +53,7 @@ function OfficialDrawioTabBody({ sessionId, useSessions, useTabInfo }: any): JSX
     const controller = new AbortController()
     setError(null)
     void fsRead({ sessionId: effectiveSessionId, cwd }, resource.path, controller.signal)
-      .then(content => { if (!controller.signal.aborted) setFile({ key, content }) })
+      .then(res => { if (!controller.signal.aborted) setFile({ key, content: res.content, version: res.version }) })
       .catch(reason => { if (!controller.signal.aborted) setError(messageOf(reason)) })
     return () => controller.abort()
   }, [key, resource?.path, effectiveSessionId, cwd])
@@ -76,41 +76,65 @@ function OfficialDrawioTabBody({ sessionId, useSessions, useTabInfo }: any): JSX
   }
   if (error) return <CenteredMessage title="画板载入失败" detail={error} />
   if (file?.key !== key) return <CenteredMessage title="正在载入画板" detail={fileName(resource.path)} />
-  return <DrawioCanvas content={file.content} path={resource.path} scope={{ sessionId: effectiveSessionId, cwd }} />
+  return <DrawioCanvas content={file.content} version={file.version} path={resource.path} scope={{ sessionId: effectiveSessionId, cwd }} />
 }
 
-function DrawioCanvas({ content, truncated, path, scope }: FileViewerProps): JSX.Element {
+function DrawioCanvas({ content, version, truncated, path, scope }: FileViewerProps): JSX.Element {
   const frame = useRef<HTMLIFrameElement>(null)
   const latestFile = useRef(content ?? '')
   const latestEditor = useRef(content ?? '')
+  const latestVersion = useRef(version)
   const saveTimer = useRef<number | undefined>(undefined)
   const saveGeneration = useRef(0)
   const [ready, setReady] = useState(false)
-  const [saveState, setSaveState] = useState<'loading' | 'saved' | 'saving' | 'external' | 'error'>('loading')
+  const [saveState, setSaveState] = useState<'loading' | 'saved' | 'saving' | 'external' | 'conflict' | 'error'>('loading')
   const [error, setError] = useState<string | null>(truncated ? '文件过大，DSH 只返回了截断内容，无法安全打开。' : null)
   const lastUserActivity = useRef(0)
   const isInteracting = useRef(false)
   const { dark, accent: accentColor } = useDshTheme()
-  const src = useMemo(() => `/dsh-drawio/runtime/index.html?embed=1&proto=json&spin=1&offline=1&local=1&ui=min&libraries=1&configure=1&noExitBtn=1&saveAndExit=0&dark=${dark ? '1' : '0'}`, [dark])
+  const initialDark = useRef(dark)
+  const src = useMemo(() => `/dsh-drawio/runtime/index.html?embed=1&proto=json&spin=1&offline=1&local=1&ui=min&libraries=1&configure=1&noExitBtn=1&saveAndExit=0&dark=${initialDark.current ? '1' : '0'}`, [])
 
   const post = useCallback((message: unknown) => {
     frame.current?.contentWindow?.postMessage(JSON.stringify(message), window.location.origin)
   }, [])
 
+  const reloadFromDisk = useCallback(async () => {
+    try {
+      setSaveState('loading')
+      const result = await fsRead(scope, path)
+      latestFile.current = result.content
+      latestEditor.current = result.content
+      latestVersion.current = result.version
+      post({ action: 'load', xml: result.content, autosave: 1, title: fileName(path), dark, noExitBtn: 1, saveAndExit: 0 })
+      setSaveState('saved')
+      setError(null)
+    } catch (reason) {
+      setError(messageOf(reason))
+    }
+  }, [scope, path, dark, post])
+
   const persist = useCallback(async (xml: string) => {
     const generation = ++saveGeneration.current
     setSaveState('saving')
     try {
-      await fsWrite(scope, path, xml)
+      const outcome = await fsWrite(scope, path, xml, latestVersion.current)
       if (generation !== saveGeneration.current) return
       latestFile.current = xml
       latestEditor.current = xml
+      if (outcome?.version) latestVersion.current = outcome.version
       setSaveState('saved')
       setError(null)
     } catch (reason) {
       if (generation !== saveGeneration.current) return
-      setSaveState('error')
-      setError(messageOf(reason))
+      const msg = messageOf(reason)
+      if (msg.includes('modified by an external process') || msg.includes('409')) {
+        setSaveState('conflict')
+        setError('文件已被外部或 AI 修改，当前存在并发冲突，点击可重新载入最新内容')
+      } else {
+        setSaveState('error')
+        setError(msg)
+      }
     }
   }, [scope.sessionId, scope.cwd, path])
 
@@ -134,7 +158,8 @@ function DrawioCanvas({ content, truncated, path, scope }: FileViewerProps): JSX
   useEffect(() => {
     latestFile.current = content ?? ''
     latestEditor.current = content ?? ''
-  }, [content, path])
+    latestVersion.current = version
+  }, [content, version, path])
 
   const markActivity = useCallback(() => {
     lastUserActivity.current = Date.now()
@@ -215,17 +240,28 @@ function DrawioCanvas({ content, truncated, path, scope }: FileViewerProps): JSX
         document.body.removeChild(link)
         showToast(`已开始下载：${fileName(pending.targetPath)}`)
       } else if (pending.target === 'clipboard') {
-        if (pending.format === 'svg') {
-          const svgText = data.startsWith('data:image/svg+xml')
-            ? decodeURIComponent(data.split(',')[1] || '')
-            : data
-          await navigator.clipboard.writeText(svgText)
-          showToast('已复制 SVG 代码到剪贴板')
-        } else {
-          const res = await fetch(data)
-          const blob = await res.blob()
-          await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })])
-          showToast('已复制图片到剪贴板')
+        try {
+          if (pending.format === 'svg') {
+            const svgText = data.startsWith('data:image/svg+xml')
+              ? decodeURIComponent(data.split(',')[1] || '')
+              : data
+            await navigator.clipboard.writeText(svgText)
+            showToast('已复制 SVG 代码到剪贴板')
+          } else {
+            const res = await fetch(data)
+            const blob = await res.blob()
+            await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })])
+            showToast('已复制图片到剪贴板')
+          }
+        } catch {
+          // 剪贴板受限或报错时降级为自动下载
+          const link = document.createElement('a')
+          link.download = fileName(pending.targetPath)
+          link.href = data
+          document.body.appendChild(link)
+          link.click()
+          document.body.removeChild(link)
+          showToast(`剪贴板无权限，已自动下载：${fileName(pending.targetPath)}`)
         }
       } else if (pending.target === 'workspace') {
         const result = await fsSaveImage(scope, pending.targetPath, data)
@@ -289,14 +325,23 @@ function DrawioCanvas({ content, truncated, path, scope }: FileViewerProps): JSX
       if (typeof document !== 'undefined' && document.hidden) return
 
       try {
-        const xml = await fsRead(scope, path)
+        // 轻量检查版本号
+        const stat = await fsStat(scope, path)
+        if (cancelled || isInteracting.current || Date.now() - lastUserActivity.current < 1200) return
+        if (stat.version && latestVersion.current && stat.version === latestVersion.current) return
+
+        const res = await fsRead(scope, path)
         // 5. 响应返回后二次防护：若这期间用户按下了鼠标或开始拖动，果断丢弃本次结果
         if (cancelled || isInteracting.current || Date.now() - lastUserActivity.current < 1200) return
-        if (xml === latestFile.current || xml === latestEditor.current) return
+        if (res.content === latestFile.current || res.content === latestEditor.current) {
+          latestVersion.current = res.version
+          return
+        }
 
-        latestFile.current = xml
-        latestEditor.current = xml
-        post({ action: 'load', xml, autosave: 1, title: fileName(path), dark, noExitBtn: 1, saveAndExit: 0 })
+        latestFile.current = res.content
+        latestEditor.current = res.content
+        latestVersion.current = res.version
+        post({ action: 'load', xml: res.content, autosave: 1, title: fileName(path), dark, noExitBtn: 1, saveAndExit: 0 })
         setSaveState('external')
         window.setTimeout(() => { if (!cancelled) setSaveState('saved') }, 1200)
       } catch (reason) {
@@ -310,7 +355,7 @@ function DrawioCanvas({ content, truncated, path, scope }: FileViewerProps): JSX
 
   useEffect(() => () => {
     if (saveTimer.current !== undefined) window.clearTimeout(saveTimer.current)
-    if (latestEditor.current !== latestFile.current) void fsWrite(scope, path, latestEditor.current, true)
+    if (latestEditor.current !== latestFile.current) void fsWrite(scope, path, latestEditor.current, latestVersion.current, true)
   }, [scope.sessionId, scope.cwd, path])
 
   if (truncated) return <CenteredMessage title="无法打开画板" detail="文件内容已被截断，继续编辑可能损坏原文件。" />
@@ -411,10 +456,22 @@ function DrawioCanvas({ content, truncated, path, scope }: FileViewerProps): JSX
         </div>
       ) : null}
 
-      <div role="status" aria-live="polite" style={{ ...styles.status, ...(saveState === 'error' ? styles.statusError : {}) }}>
-        <span style={{ ...styles.dot, background: accentColor }} />{statusText(saveState)}
+      <div role="status" aria-live="polite" style={{ ...styles.status, ...(saveState === 'error' || saveState === 'conflict' ? styles.statusError : {}) }}>
+        <span style={{ ...styles.dot, background: saveState === 'conflict' ? 'var(--dsw-alias-warning, #e6a23c)' : accentColor }} />{statusText(saveState)}
       </div>
-      {error ? <button type="button" title={error} onClick={() => setError(null)} style={styles.error}>保存失败 · 点击关闭</button> : null}
+      {error ? (
+        <button
+          type="button"
+          title={error}
+          onClick={() => {
+            if (saveState === 'conflict') void reloadFromDisk()
+            setError(null)
+          }}
+          style={styles.error}
+        >
+          {saveState === 'conflict' ? '⚠️ 检测到外部修改 · 点击重新载入' : '保存失败 · 点击关闭'}
+        </button>
+      ) : null}
     </div>
   )
 }
@@ -460,13 +517,16 @@ function detectDark(): boolean {
   return document.documentElement.classList.contains('dark') || window.matchMedia('(prefers-color-scheme: dark)').matches
 }
 
-async function fsRead(scope: SessionScope, path: string, signal?: AbortSignal): Promise<string> {
-  const value = await call<{ content: string }>('read', scope, { path }, false, signal)
-  return value.content
+async function fsStat(scope: SessionScope, path: string, signal?: AbortSignal): Promise<{ version: string; size: number }> {
+  return call<{ version: string; size: number }>('stat', scope, { path }, false, signal)
 }
 
-async function fsWrite(scope: SessionScope, path: string, content: string, keepalive = false): Promise<void> {
-  await call('write', scope, { path, content }, keepalive)
+async function fsRead(scope: SessionScope, path: string, signal?: AbortSignal): Promise<{ content: string; version: string }> {
+  return call<{ content: string; version: string }>('read', scope, { path }, false, signal)
+}
+
+async function fsWrite(scope: SessionScope, path: string, content: string, version?: string, keepalive = false): Promise<{ version?: string }> {
+  return call<{ version?: string }>('write', scope, { path, content, ...(version ? { version } : {}) }, keepalive)
 }
 
 async function fsSaveImage(scope: SessionScope, path: string, data: string): Promise<{ path: string; bytes: number }> {
@@ -555,7 +615,7 @@ export function parseDrawioAddress(address?: string, fallbackSessionId?: string)
   }
 }
 const messageOf = (reason: unknown): string => reason instanceof Error ? reason.message : String(reason)
-const statusText = (state: string): string => state === 'loading' ? '正在载入' : state === 'saving' ? '正在保存' : state === 'external' ? '已同步 AI 修改' : state === 'error' ? '保存失败' : '已保存'
+const statusText = (state: string): string => state === 'loading' ? '正在载入' : state === 'saving' ? '正在保存' : state === 'external' ? '已同步 AI 修改' : state === 'conflict' ? '检测到冲突' : state === 'error' ? '保存失败' : '已保存'
 const fg = 'var(--dsw-alias-label-primary, currentColor)'
 const muted = 'var(--dsw-alias-label-secondary, rgba(127,127,127,.9))'
 const layer = 'var(--dsw-alias-container-bg, Canvas)'

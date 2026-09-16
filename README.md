@@ -14,13 +14,12 @@
 
 ## Agent 工具与 Skill
 
-- `drawio-operation` Skill：向模型注入 Draw.io 画板整体架构、离线导出机制与最佳绘图工作流。
-- `drawio_inspect`：把画板读取为页面、节点、连线和几何信息。
-- `drawio_edit`：批量新增、更新、删除节点和连线。
+- `drawio-operation` Skill：向模型注入 Draw.io 画板整体架构、工业级排版规范、现代配色方案、离线导出机制与最佳绘图工作流。
+- `drawio_inspect`：把画板读取为页面、节点、连线和几何信息，自动提取去除 HTML 的纯文本标题与容器子节点列表。
+- `drawio_edit`：批量新增、更新、删除节点与连线，支持 `add_page`、`rename_page`、`delete_page` 多页面管理，以及 `stylePatch` 局部增量更新样式。
 - `drawio_write`：校验并写入完整的 Draw.io XML。
 
-工具统一保存为未压缩 XML，便于 Agent 继续修改，也便于 Git 查看差异。画板会
-自动保存，并轮询同步 Agent 对同一文件的修改。
+工具统一保存为未压缩 XML，便于 Agent 继续修改，也便于 Git 查看差异。画板具备真乐观并发控制（防静默覆盖冲突），并采用轻量版本感知机制自动同步 Agent 对同一文件的修改。
 
 ## 本地离线图片导出 (Export)
 

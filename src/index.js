@@ -46,7 +46,7 @@ export async function apply(ctx) {
   }))
   register(ctx, defineTool({
     name: 'drawio_edit',
-    description: 'Apply a batch of semantic edits to an existing .drawio file. Supported operations are add_node, add_edge, update and delete. Cell ids must be stable and unique. Inspect the file first when modifying an existing diagram.',
+    description: 'Apply a batch of semantic edits to an existing .drawio file. Supported operations: add_node, add_edge, update, delete, add_page, delete_page, rename_page. Cell ids must be stable and unique. Inspect the file first when modifying an existing diagram.',
     parameters: {
       path: pathParameter,
       page: { oneOf: [{ type: 'string' }, { type: 'number' }] },
@@ -55,8 +55,9 @@ export async function apply(ctx) {
         items: {
           type: 'object', additionalProperties: false,
           properties: {
-            type: { type: 'string', enum: ['add_node', 'add_edge', 'update', 'delete'], required: true },
-            id: { type: 'string', required: true }, label: { type: 'string' }, style: { type: 'string' }, parent: { type: 'string' },
+            type: { type: 'string', enum: ['add_node', 'add_edge', 'update', 'delete', 'add_page', 'delete_page', 'rename_page'], required: true },
+            id: { type: 'string' }, label: { type: 'string' }, name: { type: 'string' }, page: { oneOf: [{ type: 'string' }, { type: 'number' }] },
+            style: { type: 'string' }, stylePatch: { type: 'object', additionalProperties: true }, parent: { type: 'string' },
             source: { type: 'string' }, target: { type: 'string' },
             x: { type: 'number' }, y: { type: 'number' }, width: { type: 'number' }, height: { type: 'number' },
           },
@@ -100,7 +101,7 @@ async function serveCanvasApi(ctx, req, res) {
   try {
     const pathname = new URL(req.url || '/', 'http://dsh.internal').pathname
     const method = pathname.slice('/dsh-drawio/api/'.length)
-    if (!['read', 'write', 'save-image'].includes(method)) return respondJson(res, 404, { ok: false, error: { message: 'Unknown Draw.io operation.' } })
+    if (!['stat', 'read', 'write', 'save-image'].includes(method)) return respondJson(res, 404, { ok: false, error: { message: 'Unknown Draw.io operation.' } })
     const payload = await readJsonBody(req)
 
     if (method === 'save-image') {
@@ -131,12 +132,16 @@ async function serveCanvasApi(ctx, req, res) {
     const info = await ctx.fs.stat(target)
     if (!info || info.type !== 'file') throw new Error('Draw.io file was not found.')
     if (Number(info.size) > MAX_DIAGRAM_BYTES) throw new Error('Draw.io file is too large to open safely.')
-    if (method === 'read') return respondJson(res, 200, { ok: true, value: { content: await ctx.fs.readText(target) } })
+    if (method === 'stat') return respondJson(res, 200, { ok: true, value: { version: info.version, size: Number(info.size), mtime: info.mtime } })
+    if (method === 'read') return respondJson(res, 200, { ok: true, value: { content: await ctx.fs.readText(target), version: info.version } })
     if (typeof payload.content !== 'string' || Buffer.byteLength(payload.content) > MAX_DIAGRAM_BYTES) throw new Error('Draw.io content is too large to save safely.')
+    if (payload.version !== undefined && info.version !== undefined && String(payload.version) !== String(info.version)) {
+      return respondJson(res, 409, { ok: false, conflict: true, error: { message: 'File has been modified by an external process or agent.' } })
+    }
     const xml = normalizeDrawio(payload.content)
     const sandboxPolicy = { mode: 'workspace-write', workspaceRoot: payload.cwd }
-    await ctx.fs.writeText(target, xml, { kind: 'replaceIfVersion', version: info.version }, undefined, sandboxPolicy)
-    return respondJson(res, 200, { ok: true, value: { ok: true } })
+    const outcome = await ctx.fs.writeText(target, xml, { kind: 'replaceIfVersion', version: payload.version ?? info.version }, undefined, sandboxPolicy)
+    return respondJson(res, 200, { ok: true, value: { ok: true, version: outcome?.version ?? info.version } })
   } catch (error) {
     return respondJson(res, 400, { ok: false, error: { message: String(error?.message || error).slice(0, 500) } })
   }
