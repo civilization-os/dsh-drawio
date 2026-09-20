@@ -49,6 +49,35 @@ dsh web --port 3082 --no-open
 `.drawio` 文件时，由官方资源路由选择本插件的画板；读取和自动保存通过插件自有的
 `/dsh-drawio/api` 接口完成，并限制在当前会话工作区内。
 
+## 💡 DSH Tab 认领机制与模式声明（避坑指南）
+
+本插件向 DSH 官方 `sidebarRightTabs` 注册画板 Tab 类型时，声明了双重匹配模式：
+
+```typescript
+patterns: ['dsh-resource://file/**/*.drawio', '*.drawio']
+```
+
+### 为什么必须包含整地址模式？
+
+DSH 的 `sidebarRightTabs` 在判定「由谁打开此文件」时，采用如下候选排序规则（详见官方 `tab-registry.ts` 的 `candidates()`）：
+
+1. **优先级分档（Priority Band）**：如 `builtin`、`extension` 等；
+2. **命中模式长度（Matched Pattern Length）**：同档位下，**匹配命中的模式字符数更长者胜**；
+3. **注册顺序（Registration Order）**。
+
+#### 潜在冲突场景
+若插件仅声明裸扩展名 `*.drawio`（8 字符），一旦用户安装了带有“接管所有文件”的通用编辑器插件（例如某些侧边栏/文件编辑插件声明了 `dsh-resource://file/**`，长 22 字符）：
+- 二者同属 `extension` 优先级；
+- 长度比对：`22 > 8`，通用文件编辑器**按字符长度胜出并强行接管**；
+- 结果：用户在文件树点击 `.drawio`，打开的是别人的纯文本编辑器并展示 XML 源码，本插件画板排第二永不渲染（即便 `*.drawio` 在语义上更精确）。
+
+#### 最佳实践解法
+- **`dsh-resource://file/**/*.drawio`**（31 字符）：含冒号的分隔符模式执行整地址匹配（如 `dsh-resource://file/session/<sid>/out/arch.drawio`），以 31 > 22 字符在同档位中反超通用编辑器，稳稳赢得 `.drawio` 文件的专属画板渲染权；
+- **`*.drawio`**：不带分隔符的模式按 URI basename 匹配，继续兼容覆盖非 `dsh-resource://` 开头的任意形态地址。
+
+> [!TIP]
+> 此规则对所有**“按特定扩展名注册定制编辑器 / 视图 Tab”**的 DSH 插件均成立。编写特定扩展名 Tab 时，务必补全 `dsh-resource://file/**/*.ext` 整地址模式，防止被通用文件接管插件按模式长度压制。
+
 已在 DSH 0.1.5-rc.2 上验证构建、XML 操作、本地静态资源加载和官方右侧栏注册。
 
 当前内置的精简 Draw.io runtime 固定为 31.4.5。包含完整满血版内置图库（通用、流程图、UML、ER、BPMN、网络、Kubernetes、AWS、GCP、Cisco、电子、平面图等全部分类均可自由开启）以及 PlantUML 离线渲染模块；
