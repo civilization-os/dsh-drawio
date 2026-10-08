@@ -3,6 +3,7 @@ import { stat, readFile } from 'node:fs/promises'
 import { extname, join, normalize, relative, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { defineTool } from '@deepseek-ai/dsh-tools'
+import { isSvgMarkup, svgMarkupOf } from './svg.js'
 import { editDrawio, inspectDrawio, normalizeDrawio } from './xml.js'
 
 export const name = 'dsh-drawio'
@@ -105,27 +106,19 @@ async function serveCanvasApi(ctx, req, res) {
     const payload = await readJsonBody(req)
 
     if (method === 'save-image') {
-      if (typeof payload.data !== 'string' || !payload.data.trim()) throw new Error('Image data is required.')
+      // The workspace target is SVG-only: DSH's filesystem service writes text,
+      // with no binary seam, so a raster export has no faithful landing place.
+      // PNG and XML-PNG are exported through the browser instead.
+      const markup = svgMarkupOf(payload.data)
+      if (markup === null || !isSvgMarkup(markup)) throw new Error('Only an SVG export can be saved to the workspace.')
+      const svg = markup.trim()
+      const bytes = Buffer.byteLength(svg)
+      if (bytes > MAX_DIAGRAM_BYTES) throw new Error('SVG data is too large to save safely.')
       const target = await resolveCanvasTarget(ctx, payload.cwd, payload.path, true)
-      let buffer
-      if (payload.data.startsWith('data:')) {
-        const comma = payload.data.indexOf(',')
-        const base64 = comma >= 0 ? payload.data.slice(comma + 1) : payload.data
-        buffer = Buffer.from(base64, 'base64')
-      } else if (payload.data.startsWith('<svg') || payload.data.startsWith('<?xml')) {
-        buffer = Buffer.from(payload.data, 'utf8')
-      } else {
-        buffer = Buffer.from(payload.data, 'base64')
-      }
-      if (buffer.length > MAX_REQUEST_BYTES) throw new Error('Image data is too large to save safely.')
       const sandboxPolicy = { mode: 'workspace-write', workspaceRoot: payload.cwd }
-      const outcome = typeof ctx.fs.writeFile === 'function'
-        ? await ctx.fs.writeFile(target, buffer, { kind: 'replace' }, undefined, sandboxPolicy)
-        : typeof ctx.fs.writeBinary === 'function'
-          ? await ctx.fs.writeBinary(target, buffer, { kind: 'replace' }, undefined, sandboxPolicy)
-          : await ctx.fs.writeText(target, payload.path.endsWith('.svg') ? buffer.toString('utf8') : buffer.toString('base64'), { kind: 'replace' }, undefined, sandboxPolicy)
+      const outcome = await ctx.fs.writeText(target, svg, { kind: 'replace' }, undefined, sandboxPolicy)
       ctx.emit?.('fs/observed', target, { kind: 'present', version: outcome?.version }, undefined)
-      return respondJson(res, 200, { ok: true, value: { path: target.displayPath ?? payload.path, bytes: buffer.length } })
+      return respondJson(res, 200, { ok: true, value: { path: target.displayPath ?? payload.path, bytes } })
     }
 
     const target = await resolveCanvasTarget(ctx, payload.cwd, payload.path)
@@ -147,10 +140,10 @@ async function serveCanvasApi(ctx, req, res) {
   }
 }
 
-async function resolveCanvasTarget(ctx, cwd, path, allowImage = false) {
+async function resolveCanvasTarget(ctx, cwd, path, allowSvgExport = false) {
   if (typeof cwd !== 'string' || !cwd.trim()) throw new Error('A workspace is required.')
-  if (allowImage) {
-    assertExportImagePath(path)
+  if (allowSvgExport) {
+    assertSvgExportPath(path)
   } else {
     assertDrawioPath(path)
   }
@@ -159,8 +152,8 @@ async function resolveCanvasTarget(ctx, cwd, path, allowImage = false) {
   return target
 }
 
-function assertExportImagePath(value) {
-  if (typeof value !== 'string' || !/\.(png|svg|xml\.png)$/i.test(value)) throw new Error('path must end with .png or .svg')
+function assertSvgExportPath(value) {
+  if (typeof value !== 'string' || !/\.svg$/i.test(value)) throw new Error('path must end with .svg')
 }
 
 async function readJsonBody(req) {

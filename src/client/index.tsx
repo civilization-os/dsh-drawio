@@ -1,5 +1,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { svgMarkupOf } from '../svg.js'
+import { parseDrawioAddress, relativeToWorkspace } from './address.js'
 
 export const inject = ['slots', 'sidebarRightTabs']
 const TAB_ID = '@civilization/dsh-drawio'
@@ -51,19 +53,25 @@ function OfficialDrawioTabBody({ sessionId, useSessions, useTabInfo }: any): JSX
   const cwd = activeCwd || resourceCwd
   const effectiveSessionId = sessionId || resource?.sessionId || ''
 
+  // An absolute address carries no session, so it is openable only when it names
+  // a file under this session's workspace; the host re-checks that boundary.
+  const relativePath = resource?.scope === 'absolute' ? relativeToWorkspace(resource.path, cwd) : null
+  const outsideWorkspace = resource?.scope === 'absolute' && cwd !== undefined && relativePath === null
+  const openPath = resource?.scope === 'absolute' ? relativePath : resource?.path ?? null
+
   const [file, setFile] = useState<{ key: string; content: string; version?: string } | null>(null)
   const [error, setError] = useState<string | null>(null)
-  const key = `${effectiveSessionId}\0${cwd ?? ''}\0${resource?.path ?? ''}`
+  const key = `${effectiveSessionId}\0${cwd ?? ''}\0${openPath ?? ''}`
 
   useEffect(() => {
-    if (!resource?.path || !effectiveSessionId || !cwd) return
+    if (!openPath || !effectiveSessionId || !cwd) return
     const controller = new AbortController()
     setError(null)
-    void fsRead({ sessionId: effectiveSessionId, cwd }, resource.path, controller.signal)
+    void fsRead({ sessionId: effectiveSessionId, cwd }, openPath, controller.signal)
       .then(res => { if (!controller.signal.aborted) setFile({ key, content: res.content, version: res.version }) })
       .catch(reason => { if (!controller.signal.aborted) setError(messageOf(reason)) })
     return () => controller.abort()
-  }, [key, resource?.path, effectiveSessionId, cwd])
+  }, [key, openPath, effectiveSessionId, cwd])
 
   if (!resource || !resource.path) {
     return (
@@ -81,9 +89,18 @@ function OfficialDrawioTabBody({ sessionId, useSessions, useTabInfo }: any): JSX
       />
     )
   }
+  if (outsideWorkspace) {
+    return (
+      <CenteredMessage
+        title="无法打开画板"
+        detail={`该文件不在当前工作区内，画板只能打开工作区中的 .drawio 文件：${resource.path}`}
+      />
+    )
+  }
+  if (!openPath) return <CenteredMessage title="无法打开画板" detail="无法确定画板文件的工作区相对路径。" />
   if (error) return <CenteredMessage title="画板载入失败" detail={error} />
-  if (file?.key !== key) return <CenteredMessage title="正在载入画板" detail={fileName(resource.path)} />
-  return <DrawioCanvas content={file.content} version={file.version} path={resource.path} scope={{ sessionId: effectiveSessionId, cwd }} />
+  if (file?.key !== key) return <CenteredMessage title="正在载入画板" detail={fileName(openPath)} />
+  return <DrawioCanvas content={file.content} version={file.version} path={openPath} scope={{ sessionId: effectiveSessionId, cwd }} />
 }
 
 function DrawioCanvas({ content, version, truncated, path, scope }: FileViewerProps): JSX.Element {
@@ -215,6 +232,13 @@ function DrawioCanvas({ content, version, truncated, path, scope }: FileViewerPr
 
   const startExport = useCallback((target: 'workspace' | 'download' | 'clipboard') => {
     if (!ready || isExporting) return
+    // The workspace target is SVG-only: DSH's filesystem service writes text
+    // (there is no binary write seam), so a raster export would land as base64
+    // text. PNG and XML-PNG stay available through download and clipboard.
+    if (target === 'workspace' && exportFormat !== 'svg') {
+      showToast('仅 SVG 支持保存到工作区，PNG / XML-PNG 请使用下载或剪贴板')
+      return
+    }
     const ext = exportFormat === 'svg' ? '.svg' : exportFormat === 'xmlpng' ? '.drawio.png' : '.png'
     const base = path.replace(/\.drawio$/i, '')
     const targetPath = `${base}${ext}`
@@ -234,7 +258,7 @@ function DrawioCanvas({ content, version, truncated, path, scope }: FileViewerPr
       border: 10,
       spin: '正在渲染导出图片...',
     })
-  }, [ready, isExporting, exportFormat, isTransparent, path, post])
+  }, [ready, isExporting, exportFormat, isTransparent, path, post, showToast])
 
   const handleExportResult = useCallback(async (pending: { format: 'png' | 'svg' | 'xmlpng'; target: 'workspace' | 'download' | 'clipboard'; targetPath: string }, data: string) => {
     try {
@@ -249,9 +273,7 @@ function DrawioCanvas({ content, version, truncated, path, scope }: FileViewerPr
       } else if (pending.target === 'clipboard') {
         try {
           if (pending.format === 'svg') {
-            const svgText = data.startsWith('data:image/svg+xml')
-              ? decodeURIComponent(data.split(',')[1] || '')
-              : data
+            const svgText = svgMarkupOf(data) ?? data
             await navigator.clipboard.writeText(svgText)
             showToast('已复制 SVG 代码到剪贴板')
           } else {
@@ -423,14 +445,23 @@ function DrawioCanvas({ content, version, truncated, path, scope }: FileViewerPr
               </label>
             ) : null}
 
+            {exportFormat !== 'svg' ? (
+              <span style={styles.menuSub}>保存到工作区仅支持 SVG；PNG / XML-PNG 请用下载或剪贴板。</span>
+            ) : null}
+
             <div style={styles.actionCol}>
               <button
                 type="button"
                 onClick={() => startExport('workspace')}
-                style={{ ...styles.actionBtn, ...styles.actionBtnPrimary, background: accentColor }}
+                disabled={exportFormat !== 'svg'}
+                title={exportFormat === 'svg' ? `保存为 ${targetExt} 到画板同级目录` : '仅 SVG 支持保存到工作区，PNG / XML-PNG 请使用下载或剪贴板'}
+                style={{
+                  ...styles.actionBtn,
+                  ...(exportFormat === 'svg' ? { ...styles.actionBtnPrimary, background: accentColor } : { opacity: 0.5, cursor: 'not-allowed' }),
+                }}
               >
                 <SaveIcon size={13} />
-                <span>保存到工作区 ({targetExt})</span>
+                <span>保存到工作区 {exportFormat === 'svg' ? `(${targetExt})` : '(仅 SVG)'}</span>
               </button>
 
               <button
@@ -576,51 +607,6 @@ function CenteredMessage({ title, detail }: { title: string; detail: string }): 
 }
 
 const fileName = (path: string): string => path.replace(/\\/g, '/').split('/').pop() || path
-
-export function parseDrawioAddress(address?: string, fallbackSessionId?: string): { sessionId: string; path: string } | null {
-  if (!address || typeof address !== 'string') return null
-  try {
-    let clean = address.trim()
-    let parsedSessionId = ''
-
-    if (clean.startsWith('dsh-resource://file/session/')) {
-      const rest = clean.slice('dsh-resource://file/session/'.length)
-      const slashIdx = rest.indexOf('/')
-      if (slashIdx >= 0) {
-        parsedSessionId = decodeURIComponent(rest.slice(0, slashIdx))
-        clean = rest.slice(slashIdx + 1)
-      } else {
-        clean = rest
-      }
-    } else if (clean.startsWith('dsh-resource://file/')) {
-      clean = clean.slice('dsh-resource://file/'.length)
-    } else if (clean.startsWith('file:///')) {
-      clean = clean.slice('file:///'.length)
-    }
-
-    // 处理可能是 URL 编码的 path（支持嵌套目录 %2F）
-    let decodedPath = clean
-    try {
-      decodedPath = decodeURIComponent(clean)
-    } catch {}
-
-    // 规范化斜杠并去除开头的斜杠
-    decodedPath = decodedPath.replace(/\\/g, '/').replace(/^\/+/, '')
-
-    // 必须是 .drawio 文件
-    if (!/\.drawio$/i.test(decodedPath)) return null
-
-    // 防空字符
-    if (decodedPath.includes('\0')) return null
-
-    return {
-      sessionId: parsedSessionId || fallbackSessionId || '',
-      path: decodedPath,
-    }
-  } catch {
-    return null
-  }
-}
 const messageOf = (reason: unknown): string => reason instanceof Error ? reason.message : String(reason)
 const statusText = (state: string): string => state === 'loading' ? '正在载入' : state === 'saving' ? '正在保存' : state === 'external' ? '已同步 AI 修改' : state === 'conflict' ? '检测到冲突' : state === 'error' ? '保存失败' : '已保存'
 const fg = 'var(--dsw-alias-label-primary, currentColor)'

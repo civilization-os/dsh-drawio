@@ -33,10 +33,6 @@ async function createMockContext() {
       async stat(target) {
         return { type: 'file', size: 100, version: '1' }
       },
-      async writeFile(target, buffer, options, signal, policy) {
-        writtenFiles.push({ target: target.displayPath, buffer, policy })
-        return { version: '2' }
-      },
       async writeText(target, text) {
         writtenFiles.push({ target: target.displayPath, text })
         return { version: '2' }
@@ -82,16 +78,16 @@ function mockResponse() {
   }
 }
 
-test('save-image endpoint decodes base64 data and writes image safely to workspace', async () => {
+test('save-image endpoint decodes an SVG export and writes it as text', async () => {
   const { handlers, writtenFiles } = await createMockContext()
   const apiHandler = handlers.get('/dsh-drawio/api')
   assert.ok(apiHandler, 'API handler should be registered')
 
-  const sampleBase64 = Buffer.from('fake-png-binary-data').toString('base64')
+  const markup = '<svg xmlns="http://www.w3.org/2000/svg"><rect width="4" height="4"/></svg>'
   const req = mockRequest('POST', '/dsh-drawio/api/save-image', {
     cwd: 'D:/workspace',
-    path: 'sub/architecture.png',
-    data: `data:image/png;base64,${sampleBase64}`,
+    path: 'sub/architecture.svg',
+    data: `data:image/svg+xml;base64,${Buffer.from(markup).toString('base64')}`,
   })
   const res = mockResponse()
   await apiHandler(req, res)
@@ -99,35 +95,66 @@ test('save-image endpoint decodes base64 data and writes image safely to workspa
   assert.equal(res.statusCode, 200)
   assert.equal(res.body.ok, true)
   assert.equal(writtenFiles.length, 1)
-  assert.equal(writtenFiles[0].target, 'D:/workspace/sub/architecture.png')
-  assert.equal(writtenFiles[0].buffer.toString(), 'fake-png-binary-data')
+  assert.equal(writtenFiles[0].target, 'D:/workspace/sub/architecture.svg')
+  assert.equal(writtenFiles[0].text, markup)
+  assert.equal(res.body.value.bytes, Buffer.byteLength(markup))
 })
 
-test('save-image rejects invalid image extensions and path traversal', async () => {
-  const { handlers } = await createMockContext()
+test('save-image accepts percent-encoded SVG markup without a data URL', async () => {
+  const { handlers, writtenFiles } = await createMockContext()
   const apiHandler = handlers.get('/dsh-drawio/api')
 
-  // 非图片后缀拒绝
+  const markup = '<svg xmlns="http://www.w3.org/2000/svg"/>'
+  const req = mockRequest('POST', '/dsh-drawio/api/save-image', {
+    cwd: 'D:/workspace',
+    path: 'architecture.svg',
+    data: `data:image/svg+xml,${encodeURIComponent(markup)}`,
+  })
+  const res = mockResponse()
+  await apiHandler(req, res)
+
+  assert.equal(res.statusCode, 200)
+  assert.equal(writtenFiles[0].text, markup)
+})
+
+test('save-image refuses raster payloads, other extensions and workspace escapes', async () => {
+  const { handlers, writtenFiles } = await createMockContext()
+  const apiHandler = handlers.get('/dsh-drawio/api')
+
+  // A PNG export has no faithful landing place: the filesystem service writes text.
+  const reqPng = mockRequest('POST', '/dsh-drawio/api/save-image', {
+    cwd: 'D:/workspace',
+    path: 'sub/architecture.png',
+    data: `data:image/png;base64,${Buffer.from('fake-png-binary-data').toString('base64')}`,
+  })
+  const resPng = mockResponse()
+  await apiHandler(reqPng, resPng)
+  assert.equal(resPng.statusCode, 400)
+  assert.match(resPng.body.error.message, /Only an SVG export can be saved to the workspace/)
+
+  // 非 SVG 后缀拒绝
   const reqBadExt = mockRequest('POST', '/dsh-drawio/api/save-image', {
     cwd: 'D:/workspace',
     path: 'sub/architecture.exe',
-    data: 'data:image/png;base64,Zm9v',
+    data: 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg"/>',
   })
   const resBadExt = mockResponse()
   await apiHandler(reqBadExt, resBadExt)
   assert.equal(resBadExt.statusCode, 400)
-  assert.match(resBadExt.body.error.message, /path must end with \.png or \.svg/)
+  assert.match(resBadExt.body.error.message, /path must end with \.svg/)
 
   // 路径穿越越出 workspace
   const reqEscape = mockRequest('POST', '/dsh-drawio/api/save-image', {
     cwd: 'D:/workspace',
-    path: 'C:/Windows/system32/evil.png',
-    data: 'data:image/png;base64,Zm9v',
+    path: 'C:/Windows/system32/evil.svg',
+    data: 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg"/>',
   })
   const resEscape = mockResponse()
   await apiHandler(reqEscape, resEscape)
   assert.equal(resEscape.statusCode, 400)
   assert.match(resEscape.body.error.message, /File must stay inside the current workspace/)
+
+  assert.equal(writtenFiles.length, 0)
 })
 
 test('stat and read endpoints return file version and prevent concurrency conflicts', async () => {

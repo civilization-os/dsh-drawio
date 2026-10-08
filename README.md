@@ -30,9 +30,9 @@
   - **SVG (矢量图)**：提取无损矢量图形，任意放大不失真；
   - **XML-PNG (可编辑图)**：在 PNG 图像中内嵌图表 XML 原数据，既能作为常规图片展示，又可随时拖回 Draw.io 继续二次编辑。
 - **三大输出方式**：
-  - **保存到工作区**：在当前画板文件同级目录下自动生成同名图片文件（如 `arch.drawio` -> `arch.png`），自动触发 DSH 文件系统感知；
-  - **复制到剪贴板**：一键将 PNG 图片写入操作系统剪贴板（`navigator.clipboard`），方便在 Markdown、PRD 或聊天工具中直接 `Ctrl + V` 粘贴；
-  - **下载图片文件**：触发浏览器原生下载弹窗保存到本地磁盘。
+  - **保存到工作区（仅 SVG）**：在当前画板文件同级目录下自动生成同名矢量文件（如 `arch.drawio` -> `arch.svg`），自动触发 DSH 文件系统感知。DSH 的 `ctx.fs` 只提供文本写入（无二进制写入口），光栅图落盘会退化成 base64 文本，因此 PNG / XML-PNG 不走此通道；
+  - **复制到剪贴板**：PNG / XML-PNG 写入操作系统剪贴板（`navigator.clipboard`），SVG 复制为源码文本，方便在 Markdown、PRD 或聊天工具中直接 `Ctrl + V` 粘贴；
+  - **下载图片文件**：触发浏览器原生下载弹窗保存到本地磁盘，三种格式均可用。
 
 ## 开发验证
 
@@ -78,7 +78,11 @@ DSH 的 `sidebarRightTabs` 在判定「由谁打开此文件」时，采用如�
 > [!TIP]
 > 此规则对所有**“按特定扩展名注册定制编辑器 / 视图 Tab”**的 DSH 插件均成立。编写特定扩展名 Tab 时，务必补全 `dsh-resource://file/**/*.ext` 整地址模式，防止被通用文件接管插件按模式长度压制。
 
-已在 DSH 0.1.5-rc.2 上验证构建、XML 操作、本地静态资源加载和官方右侧栏注册。
+已在 DSH 0.2.0-rc.2 上验证构建、XML 操作、本地静态资源加载和官方右侧栏注册。
+
+`peerDependencies` 只声明**下界**（`>=0.1.5-rc.2`，无上界），以便跟随 DSH 的快速迭代：DSH 的兼容性判定用运行时版本比对这些范围，因此新版本不会再被旧插件卡住。代价是不再对未来的破坏性变更提供“响亮拒绝”，且**不保证前序版本**——已发布版本只在上述版本上验证过。
+
+画板地址解析直接复用 DSH 官方 `parseFileAddress`（`@deepseek-ai/dsh-util-workspace-path`），完整支持 `dsh-resource://file/session/<sid>/<path>` 与 `dsh-resource://file/absolute/<path>` 两种 scope；`absolute` 地址只有在文件位于当前会话工作区内时才能打开，工作区外会给出明确提示，服务端仍会二次校验边界。
 
 当前内置的精简 Draw.io runtime 固定为 31.4.5。包含完整满血版内置图库（通用、流程图、UML、ER、BPMN、网络、Kubernetes、AWS、GCP、Cisco、电子、平面图等全部分类均可自由开启）以及 PlantUML 离线渲染模块；
 云盘、在线图库、模板库、VSDX/Gliffy 导入未包含；已全面支持纯本地离线 Canvas + SVG 导出引擎。
