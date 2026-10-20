@@ -78,11 +78,12 @@ DSH 的 `sidebarRightTabs` 在判定「由谁打开此文件」时，采用如�
 > [!TIP]
 > 此规则对所有**“按特定扩展名注册定制编辑器 / 视图 Tab”**的 DSH 插件均成立。编写特定扩展名 Tab 时，务必补全 `dsh-resource://file/**/*.ext` 整地址模式，防止被通用文件接管插件按模式长度压制。
 
-已在 DSH 0.2.0-rc.2 上验证构建、XML 操作、本地静态资源加载和官方右侧栏注册。
+## Harness / Cordis 版本兼容
 
-`peerDependencies` 只声明**下界**（`>=0.1.5-rc.2`，无上界），以便跟随 DSH 的快速迭代：DSH 的兼容性判定用运行时版本比对这些范围，因此新版本不会再被旧插件卡住。代价是不再对未来的破坏性变更提供“响亮拒绝”，且**不保证前序版本**——已发布版本只在上述版本上验证过。
+当前版本已在 DeepSeek Harness **0.2.1-rc.2** 及 Cordis **4.0.5** 上全量验证通过：构建、XML 离线操作与编辑、乐观锁版本感知、本地静态资源加载及官方右侧栏 `sidebarRightTabs` / `slots` 注册全部正常，单元测试通过率 100%。
 
-画板地址解析直接复用 DSH 官方 `parseFileAddress`（`@deepseek-ai/dsh-util-workspace-path`），完整支持 `dsh-resource://file/session/<sid>/<path>` 与 `dsh-resource://file/absolute/<path>` 两种 scope；`absolute` 地址只有在文件位于当前会话工作区内时才能打开，工作区外会给出明确提示，服务端仍会二次校验边界。
+- `peerDependencies` 只声明**下界**（`>=0.1.5-rc.2`，无上界），以便跟随 DSH 的快速迭代：DSH 的兼容性判定用运行时版本比对这些范围，新版本不会再被旧插件卡住。
+- 画板地址解析直接复用 DSH 官方 `parseFileAddress`（`@deepseek-ai/dsh-util-workspace-path`），完整支持 `dsh-resource://file/session/<sid>/<path>` 与 `dsh-resource://file/absolute/<path>` 两种 scope；`absolute` 地址只有在文件位于当前会话工作区内时才能打开，工作区外会给出明确提示，服务端仍会二次校验边界。
 
 当前内置的精简 Draw.io runtime 固定为 31.4.5。包含完整满血版内置图库（通用、流程图、UML、ER、BPMN、网络、Kubernetes、AWS、GCP、Cisco、电子、平面图等全部分类均可自由开启）以及 PlantUML 离线渲染模块；
 云盘、在线图库、模板库、VSDX/Gliffy 导入未包含；已全面支持纯本地离线 Canvas + SVG 导出引擎。
