@@ -1,7 +1,7 @@
 {
   "name": "@civilization/dsh-drawio",
   "version": "0.4.4",
-  "description": "Local draw.io canvas and model tools for DeepSeek Harness",
+  "description": "本地离线集成 Draw.io 流程图/架构图画布；在工作台直接双击预览与编辑，并为模型提供自动绘图与修改工具。",
   "license": "Apache-2.0",
   "type": "module",
   "main": "src/index.js",
