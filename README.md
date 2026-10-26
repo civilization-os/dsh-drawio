@@ -80,7 +80,7 @@ DSH 的 `sidebarRightTabs` 在判定「由谁打开此文件」时，采用如�
 
 ## Harness / Cordis 版本兼容
 
-当前版本已在 DeepSeek Harness **0.2.1-rc.2** 及 Cordis **4.0.5** 上全量验证通过：构建、XML 离线操作与编辑、乐观锁版本感知、本地静态资源加载及官方右侧栏 `sidebarRightTabs` / `slots` 注册全部正常，单元测试通过率 100%。
+当前版本已在 DeepSeek Harness **0.2.1-rc.3** 及 Cordis **4.0.5** 上全量验证通过：构建、XML 离线操作与编辑、乐观锁版本感知、本地静态资源加载及官方右侧栏 `sidebarRightTabs` / `slots` 注册全部正常，单元测试通过率 100%。
 
 - `peerDependencies` 只声明**下界**（`>=0.1.5-rc.2`，无上界），以便跟随 DSH 的快速迭代：DSH 的兼容性判定用运行时版本比对这些范围，新版本不会再被旧插件卡住。
 - 画板地址解析直接复用 DSH 官方 `parseFileAddress`（`@deepseek-ai/dsh-util-workspace-path`），完整支持 `dsh-resource://file/session/<sid>/<path>` 与 `dsh-resource://file/absolute/<path>` 两种 scope；`absolute` 地址只有在文件位于当前会话工作区内时才能打开，工作区外会给出明确提示，服务端仍会二次校验边界。
